@@ -6,13 +6,14 @@ jobs:
       # specify the version you desire here
       - image: circleci/node:8.12.0
       - image: cypress/base:8
+      - image: cypress/browsers:chrome69
       
       # Specify service dependencies here if necessary
       # CircleCI maintains a library of pre-built images
       # documented at https://circleci.com/docs/2.0/circleci-images/
       # - image: circleci/mongo:3.4.4
     working_directory: ~/repo
-
+    
     steps:
       - checkout
       # Download and cache dependencies
@@ -30,11 +31,9 @@ jobs:
           paths:
             - ~/.cache/yarn
 
-      - run: cypress:all  
-      - store_artifacts:
-          path: cypress/videos
-      - store_artifacts:
-          path: cypress/screenshots
+      jobs:
+        - cypress/run:
+            store_artifacts: true
 
  
 
