@@ -1,41 +1,651 @@
+# This code is licensed from CircleCI to the user under the MIT license. See
+# https://circleci.com/orbs/registry/licensing for details.
+version: 2.1
+description: |
+  Run your Cypress.io end-to-end browser tests without spending time configuring CircleCI.
+  This orb can also record results on the Cypress Dashboard and load balance tests in parallel mode.
+  If recording on the dashboard, set `CYPRESS_RECORD_KEY` as CI environment variable.
 
-version: 2
-jobs:
-  build:
+#
+# See https://www.cypress.io/
+#
+# User workflows can use "Jobs" defined in this Orb
+# Jobs can use "Commands" also defined in this Orb
+# Commands run on "Executors" defined below to guarantee consistent environment
+# with all dependencies installed correctly.
+
+#
+# environments (containers) for running jobs and commands
+#
+executors:
+  default:
+    description: Single Docker container with Cypress dependencies
+    parameters:
+      node:
+        type: string
+        default: '10'
+        description: Version of Node 6/8/10 to use
     docker:
-      # specify the version you desire here
-      - image: circleci/node:8.12.0
+      - image: cypress/base:<< parameters.node >>
+
+  # executors based on available Cypress docker images
+  # see https://github.com/cypress-io/cypress-docker-images
+  base-6:
+    description: Single Docker container with Node 6 and Cypress dependencies
+    docker:
+      - image: cypress/base:6
+
+  base-8:
+    description: Single Docker container with Node 8 and Cypress dependencies
+    docker:
       - image: cypress/base:8
+
+  base-10:
+    description: Single Docker container with Node 10 and Cypress dependencies
+    docker:
+      - image: cypress/base:10
+
+  browsers-chrome69:
+    description: Docker container with Node 10, Cypress dependencies and Chrome 69
+    docker:
       - image: cypress/browsers:chrome69
-      
-      # Specify service dependencies here if necessary
-      # CircleCI maintains a library of pre-built images
-      # documented at https://circleci.com/docs/2.0/circleci-images/
-      # - image: circleci/mongo:3.4.4
-    working_directory: ~/repo
-    
+
+#
+# reusable commands
+#
+commands:
+  #
+  # individual "building blocks" commands
+  #
+  setup:
+    parameters:
+      executor:
+        description: Executor to use
+        type: executor
+        default: base-10
+      build:
+        description: Optional build command(s)
+        type: steps
+        default: []
+      yarn:
+        description: Use yarn instead of npm
+        type: boolean
+        default: false
+    steps:
+      - restore_cache:
+          keys:
+            - cache-{{ arch }}-{{ .Branch }}-{{ checksum "package.json" }}
+      # it would be nice to vary this command based on presence of "package-lock.json"
+      # and also allow using yarn or pnpm
+      - when:
+          condition: << parameters.yarn >>
+          steps:
+            - run:
+                name: 'Yarn install'
+                command: 'yarn install --frozen-lockfile'
+      - unless:
+          condition: << parameters.yarn >>
+          steps:
+            - run:
+                name: 'Npm CI'
+                command: 'npm ci'
+      - run: npx cypress verify
+      # save new cache folder if needed
+      - when:
+          condition: << parameters.yarn >>
+          steps:
+            - save_cache:
+                key: cache-{{ arch }}-{{ .Branch }}-{{ checksum "package.json" }}
+                paths:
+                  - ~/.cache
+      - unless:
+          condition: << parameters.yarn >>
+          steps:
+            - save_cache:
+                key: cache-{{ arch }}-{{ .Branch }}-{{ checksum "package.json" }}
+                paths:
+                  - ~/.npm
+                  - ~/.cache
+      - steps: << parameters.build >>
+
+  write_workspace:
+    steps:
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - project
+            - .cache/Cypress
+
+  #
+  # public user commands
+  #
+
+  # Install command
+  install:
+    description: |
+      Install NPM dependencies using "npm ci" or "yarn install --frozen-lockfile" then optionally runs your build command
+    parameters:
+      build:
+        type: steps
+        default: []
+        description: Custom build commands to run after install
+      yarn:
+        description: Use yarn instead of npm
+        type: boolean
+        default: false
+    steps:
+      - setup:
+          build: << parameters.build >>
+          yarn: << parameters.yarn >>
+      - write_workspace
+
+#
+# jobs defined by the orb
+#
+jobs:
+  # a single e2e test run that
+  #   - checks out code
+  #   - installs NPM dependencies
+  #     * (optional) run custom build command
+  #   - executes Cypress end-to-end tests
+  #     * (optional) starts server in the background
+  #     * (optional) records tests results on Cypress Dashboard:
+  #       - (optional) splits tests across N machines
+  #       - (optional) names tests with a group name
+  #       - (optional) use custom run tests command
+  run:
+    description:
+      A single complete job to run Cypress end-to-end tests in your project.
+      If recording on the Dashboard, set `CYPRESS_RECORD_KEY` environment variable
+
+    parameters:
+      executor:
+        type: executor
+        default: base-10
+        description: Cypress executor to use, see [executors.md](executors.md).
+
+      record:
+        type: boolean
+        default: false
+        description: |
+          Record results on Cypress Dashboard, see https://on.cypress.io/dashboard-service.
+          This option is necessary to enable other related flags, like `parallel` and `group`.
+
+      # "parallel" parameter should be used with "parallelism" parameter
+      parallel:
+        type: boolean
+        default: false
+        description: |
+          Use test balancing using Cypress Dashboard,
+          see https://on.cypress.io/parallelization. Requires `record: true`
+
+      parallelism:
+        type: integer
+        default: 1
+        description: |
+          Number of Circle machines to use for load balancing, min 1
+          (requires "parallel" parameter set to true, and requires `record: true`)
+
+      group:
+        type: string
+        default: ''
+        description: |
+          Test group name when recording on the dashboard. Requires `record: true`
+
+      build:
+        type: string
+        default: ''
+        description: Custom build command to run after install
+
+      start:
+        type: string
+        default: ''
+        description: |
+          Optional server start command to run in the background before running Cypress tests
+
+      wait-on:
+        type: string
+        default: ''
+        description: |
+          Optional url check using `wait-on` utility. Useful to delay tests until server boots and responds.
+          Example:
+            wait-on: "http://localhost:4200" # wait for local port 4200 to respond to HEAD request
+            wait-on: "http-get://127.0.0.1:3000" # wait for port 3000 to respond to GET request
+
+      browser:
+        type: string
+        default: ''
+        description: |
+          Browser to use to run end-to-end tests. Typically "electron" (default) or "chrome".
+          See https://on.cypress.io/launching-browsers, requires using executor with the browser installed,
+          electron browser is already included with Cypress.
+
+      spec:
+        type: string
+        default: ''
+        description: |
+          Spec pattern to use to run only some test files.
+
+      command:
+        type: string
+        default: ''
+        description: Custom test command to run Cypress tests, which overrides all individual options.
+
+      store_artifacts:
+        type: boolean
+        default: false
+        description: |
+          Store Cypress-generated screenshots and videos as CircleCI test artifacts.
+          See https://circleci.com/docs/2.0/artifacts/
+
+      yarn:
+        description: Use yarn instead of npm
+        type: boolean
+        default: false
+
+    executor: <<parameters.executor>>
+    parallelism: <<parameters.parallelism>>
+
+    steps:
+      - when:
+          condition: << parameters.parallel >>
+          # user wants to run in parallel mode
+          # thus we assume the dependencies were installed as separate job
+          # hmm, can we detect if this job requires cypress/install automatically?
+          steps:
+            - run: echo "Assuming dependencies were installed using cypress/install job"
+            - attach_workspace:
+                at: ~/
+
+      - unless:
+          condition: << parameters.parallel >>
+          steps:
+            - checkout
+            - when:
+                condition: << parameters.build >>
+                steps:
+                  - install:
+                      yarn: << parameters.yarn >>
+                      build:
+                        - run: << parameters.build >>
+            - unless:
+                condition: <<parameters.build>>
+                steps:
+                  - install:
+                      yarn: << parameters.yarn >>
+
+      - when:
+          condition: <<parameters.start>>
+          steps:
+            - run:
+                name: Start
+                command: <<parameters.start>>
+                background: true
+
+      - when:
+          condition: <<parameters.wait-on>>
+          steps:
+            - run:
+                name: Wait-on <<parameters.wait-on>>
+                command: npx wait-on <<parameters.wait-on>>
+
+      - when:
+          condition: <<parameters.command>>
+          steps:
+            - run:
+                command: <<parameters.command>>
+
+      - unless:
+          condition: <<parameters.command>>
+          steps:
+            - run:
+                name: Run Cypress tests
+                # GOOD EXAMPLE conditional text based on boolean parameter
+                # --record is needed to pass many other arguments, like "--group" and "--parallel"
+                command: |
+                  npx cypress run \
+                    <<# parameters.spec>> --spec '<<parameters.spec>>' <</ parameters.spec>> \
+                    <<# parameters.browser>> --browser <<parameters.browser>> <</ parameters.browser>> \
+                    <<# parameters.record >> --record \
+                      <<# parameters.group>> --group '<<parameters.group>>' <</ parameters.group>> \
+                      <<# parameters.parallel>> --parallel <</ parameters.parallel>> \
+                    <</ parameters.record>>
+
+      - when:
+          condition: << parameters.store_artifacts >>
+          # store videos and screenshots (if any) as Circle artifacts
+          # https://circleci.com/docs/2.0/artifacts/
+          steps:
+            - store_artifacts:
+                path: cypress/videos
+            - store_artifacts:
+                path: cypress/screenshots
+
+  # Install Job
+  install:
+    parameters:
+      executor:
+        type: executor
+        default: base-10
+        description: Cypress executor to use
+      build:
+        type: string
+        default: ''
+        description: Custom build command to run after install
+      yarn:
+        description: Use yarn instead of npm
+        type: boolean
+        default: false
+    description: Checks out code, installs dependencies, attaches code to the workspace
+    executor: <<parameters.executor>>
     steps:
       - checkout
-      # Download and cache dependencies
-      - restore_cache:
-          name: Restore Yarn Package Cache
-          keys:
-            - yarn-packages-{{ checksum "yarn.lock" }}
-      - run:
-          name: Install Dependencies
-          command: yarn install --frozen-lockfile
+      - when:
+          condition: << parameters.build >>
+          steps:
+            - install:
+                yarn: << parameters.yarn >>
+                build:
+                  - run: << parameters.build >>
+      - unless:
+          condition: << parameters.build >>
+          steps:
+            - install:
+                yarn: << parameters.yarn >>
 
-      - save_cache:
-          name: Save Yarn Package Cache
-          key: yarn-packages-{{ checksum "yarn.lock" }}
-          paths:
-            - ~/.cache/yarn
+#
+# User examples showing how to use the above Cypress Orb
+#
+examples:
+  simple:
+    description: Runs all Cypress tests without recording results on the Dashboard
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/run
 
+  yarn:
+    description: Installs NPM dependencies using "yarn install --frozen-lockfile" command
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.4.0
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                yarn: true
+
+  using-node6:
+    description: Runs all Cypress tests on Node 6 image
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                executor: cypress/base-6
+
+  recording:
+    description: Runs all Cypress tests and records them on the Cypress Dashboard
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                record: true
+
+  artifacts:
+    description: Stores test screenshots and videos as CircleCI artifacts
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.2.0
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                store_artifacts: true
+
+  chrome:
+    description: Runs tests using Chrome browser in custom executor (Cypress docker image)
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                executor: cypress/browsers-chrome69
+                browser: chrome
+
+  start-server:
+    description: Starts server and then runs all Cypress tests
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                start: 'npm start'
+
+  wait-for-server-to-respond:
+    description: |
+      Starts server, waits for it to respond and then runs all Cypress tests.
+      Uses `npx wait-on ...` command under the hood, see [wait-on](https://github.com/jeffbski/wait-on#readme)
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                start: 'npm start'
+                wait-on: 'http://localhost:4200'
+
+  parallel-on-2-machines:
+    description: Runs all Cypress tests by load balancing them on two machines
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/install
+            - cypress/run:
+                requires:
+                  - cypress/install
+                record: true
+                parallel: true
+                parallelism: 2
+                group: '2 machines'
+
+  install-private-npm-modules:
+    description: |
+      In this example, we write the NPM auth token before running "npm install" command.
+      This allows us to install private NPM modules for example.
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.4.0
+      workflows:
+        build:
+          jobs:
+            - cypress/install:
+                pre-steps:
+                  - run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+            - cypress/run:
+                requires:
+                  - cypress/install
+
+  build-app:
+    description: |
+      Install dependencies and run custom build command on one machine.
+      Then run on 3 machines tests in load balancing mode.
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/install:
+                build: 'npm run build' # custom build command
+            - cypress/run:
+                requires:
+                  - cypress/install
+                record: true
+                parallel: true
+                parallelism: 3
+                group: '3x'
+
+  groups:
+    description: |
+      Runs all tests on 4 machines using Electron browser (default).
+      Also runs some tests using "spec" parameter on Chrome browser.
+      Records both groups on Cypress dashboard. Notice "name" under each "cypress/run" job
+      which will be shown in the Circle workflow UI to tell jobs apart.
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
+      workflows:
+        build:
+          jobs:
+            - cypress/install
+            - cypress/run:
+                name: '4 machines'
+                requires:
+                  - cypress/install
+                record: true
+                parallel: true
+                parallelism: 4
+                group: '4 machines'
+            - cypress/run:
+                name: 'Chrome'
+                requires:
+                  - cypress/install
+                executor: cypress/browsers-chrome69
+                record: true
+                parallel: true
+                parallelism: 2
+                group: 'smoke tests'
+                browser: 'chrome'
+                spec: 'cypress/integration/smoke/*'
+
+  release:
+    description: |
+      If you want to run a job after running Cypress tests, you can
+      reuse the workspace from the `cypress/run` job. For example,
+      to run a semantic release script you could do the following
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.1.0
       jobs:
-        - cypress/run:
-            store_artifacts: true
+        release:
+          executor: cypress/base-10
+          steps:
+            # the workspace saved by cypress/install
+            - attach_workspace:
+                at: ~/
+            - run: npm run semantic-release
+      workflows:
+        build:
+          jobs:
+            - cypress/install
+            - cypress/run:
+                requires:
+                  - cypress/install
+            - release:
+                requires:
+                  - cypress/run
 
- 
+  linux-and-mac:
+    description: |
+      Runs tests on Linux and on Mac via two jobs. Note how the user defines and uses own executor "mac"
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.3.0
 
+      executors:
+        mac:
+          macos:
+            xcode: '10.1.0'
 
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                name: Linux test
+            - cypress/run:
+                name: Mac test
+                executor: mac
 
+  custom-executor:
+    description: |
+      Use any executor to run the job defined by the orb.
+      Assumes the executor has all OS dependencies necessary to run Cypress.
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.3.0
+
+      executors:
+        with-chrome:
+          docker:
+            - image: cypress/browsers:chrome69
+
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                executor: with-chrome
+
+  env-vars:
+    description: Set environment variables when running the job using executor.
+    usage:
+      version: 2.1
+      orbs:
+        cypress: cypress-io/cypress@1.3.0
+
+      executors:
+        base10-foo-bar:
+          docker:
+            - image: cypress/base:10
+          environment:
+            FOO: 'foo'
+            BAR: 'bar'
+
+      workflows:
+        build:
+          jobs:
+            - cypress/run:
+                executor: base10-foo-bar
+##
+## Development (internal)
+##
+## process this workflow using above jobs and commands like inline orb
+## Useful for local developing, especially by showing the effective config
+## using: npm run effective:config
+# workflows:
+#   build:
+#     jobs:
+#       - install:
+#           pre-steps:
+#             - run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
