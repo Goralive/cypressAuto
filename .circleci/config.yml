@@ -32,9 +32,17 @@ jobs:
           paths:
             - ~/.cache/yarn
             
-      - run: 
-        name: Start test with cypress
-        command: yarn cypress:all
+      steps:
+      - run: yarn install
+      - run: yarn start
+      - run: yarn cypress:all      
+        
+
+     - store_test_results:
+          path: /tmp/test-results
+      - store_artifacts:
+          path: /tmp/test-results
+          destination: test-results
 
 
 
