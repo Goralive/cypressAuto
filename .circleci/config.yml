@@ -13,6 +13,11 @@ jobs:
       # - image: circleci/mongo:3.4.4
 
     working_directory: ~/repo
+       - store_test_results:
+          path: /tmp/test-results
+      - store_artifacts:
+          path: /tmp/test-results
+          destination: test-results
 
     steps:
       - checkout
@@ -37,11 +42,7 @@ jobs:
       - run: yarn cypress:all      
         
 
-     - store_test_results:
-          path: /tmp/test-results
-      - store_artifacts:
-          path: /tmp/test-results
-          destination: test-results
+ 
 
 
 
