@@ -5,6 +5,7 @@ jobs:
     docker:
       # specify the version you desire here
       - image: circleci/node:8.12.0
+      - image: cypress/base:8
       
       # Specify service dependencies here if necessary
       # CircleCI maintains a library of pre-built images
@@ -30,9 +31,10 @@ jobs:
           key: yarn-packages-{{ checksum "yarn.lock" }}
           paths:
             - ~/.cache/yarn
-        
-      # run tests!
-      - run: yarn test
+            
+      - run: 
+        name: Start test with cypress
+        command: yarn cypress:all
 
 
 
