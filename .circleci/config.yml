@@ -29,8 +29,6 @@ jobs:
           paths:
             - ~/.cache/yarn
 
-      - run: yarn install
-      - run: yarn start
       - run: yarn cypress:all  
       - store_artifacts:
           path: cypress/videos
